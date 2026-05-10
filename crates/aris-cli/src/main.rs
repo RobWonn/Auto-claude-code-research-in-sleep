@@ -1659,8 +1659,13 @@ impl LiveCli {
                 } else {
                     // Anthropic mode
                     vec![
-                        ("claude-opus-4-6", "Opus 4.6 · Most capable for complex work"),
-                        ("claude-sonnet-4-6", "Sonnet 4.6 · Best for everyday tasks"),
+                        ("claude-opus-4-7", "Opus 4.7 · Latest and most capable"),
+                        ("claude-opus-4-6:thinking", "Opus 4.6 Thinking · Extended thinking enabled"),
+                        ("claude-opus-4-6", "Opus 4.6 · No thinking"),
+                        ("claude-opus-4-5-20251101", "Opus 4.5 · Previous gen"),
+                        ("claude-sonnet-4-6:thinking", "Sonnet 4.6 Thinking · Extended thinking enabled"),
+                        ("claude-sonnet-4-6", "Sonnet 4.6 · No thinking"),
+                        ("claude-sonnet-4-5-20250929", "Sonnet 4.5 · Previous gen"),
                         ("claude-haiku-4-5-20251001", "Haiku 4.5 · Fastest for quick answers"),
                     ]
                     .into_iter()
@@ -1777,10 +1782,11 @@ impl LiveCli {
                 }
                 if has_openai {
                     for (name, desc) in [
+                        ("gpt-5.5", "OpenAI · GPT-5.5 latest, most capable"),
                         ("gpt-5.4", "OpenAI · Best intelligence for reviews"),
                         ("gpt-5.4-mini", "OpenAI · Strong and affordable"),
-                        ("gpt-5.4-nano", "OpenAI · Cheapest, high-volume"),
-                        ("gpt-4o", "OpenAI · Previous gen, stable"),
+                        ("gpt-5.3-codex", "OpenAI · Codex, code-focused"),
+                        ("gpt-5.2", "OpenAI · Previous gen"),
                     ] {
                         items.push(input::SelectItem {
                             label: name.to_string(),
@@ -3191,8 +3197,8 @@ fn build_system_prompt(model_id: Option<&str>) -> Result<Vec<String>, Box<dyn st
     // ARIS identity: tell the model exactly who it is to prevent hallucination.
     let model_name = model_id.unwrap_or("unknown");
     let friendly_name = match model_name {
-        "claude-opus-4-6" => "Claude Opus 4.6",
-        "claude-sonnet-4-6" => "Claude Sonnet 4.6",
+        "claude-opus-4-6" | "claude-opus-4-6:thinking" => "Claude Opus 4.6",
+        "claude-sonnet-4-6" | "claude-sonnet-4-6:thinking" => "Claude Sonnet 4.6",
         "claude-haiku-4-5-20251001" => "Claude Haiku 4.5",
         other => other,
     };
@@ -3476,9 +3482,28 @@ fn resolve_cli_auth_source() -> Result<AuthSource, Box<dyn std::error::Error>> {
 impl ApiClient for AnthropicRuntimeClient {
     #[allow(clippy::too_many_lines)]
     fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+        let thinking_enabled = self.model.ends_with(":thinking");
+        let actual_model = self.model.trim_end_matches(":thinking").to_string();
+        let thinking_config = if thinking_enabled {
+            let budget = match max_tokens_for_model(&actual_model) {
+                t if t >= 16384 => 10000,
+                t => (t / 2).max(1024),
+            };
+            Some(api::ThinkingConfig {
+                kind: "enabled".to_string(),
+                budget_tokens: budget,
+            })
+        } else {
+            None
+        };
+        let max_tokens = if thinking_enabled {
+            max_tokens_for_model(&actual_model).max(16000)
+        } else {
+            max_tokens_for_model(&actual_model)
+        };
         let message_request = MessageRequest {
-            model: self.model.clone(),
-            max_tokens: max_tokens_for_model(&self.model),
+            model: actual_model,
+            max_tokens,
             messages: convert_messages(&request.messages),
             system: if request.system_prompt.is_empty() {
                 None
@@ -3510,6 +3535,7 @@ impl ApiClient for AnthropicRuntimeClient {
             }),
             tool_choice: self.enable_tools.then_some(ToolChoice::Auto),
             stream: true,
+            thinking: thinking_config,
         };
 
         self.runtime.block_on(async {
@@ -3567,6 +3593,15 @@ impl ApiClient for AnthropicRuntimeClient {
                                 events.push(AssistantEvent::TextDelta(text));
                             }
                         }
+                        ContentBlockDelta::ThinkingDelta { thinking } => {
+                            if !thinking.is_empty() {
+                                let dim = format!("\x1b[2m{thinking}\x1b[0m");
+                                write!(out, "{dim}")
+                                    .and_then(|()| out.flush())
+                                    .map_err(|error| RuntimeError::new(error.to_string()))?;
+                            }
+                        }
+                        ContentBlockDelta::SignatureDelta { .. } => {}
                         ContentBlockDelta::InputJsonDelta { partial_json } => {
                             if let Some((_, _, input)) = &mut pending_tool {
                                 input.push_str(&partial_json);
@@ -4120,6 +4155,15 @@ fn push_output_block(
                 events.push(AssistantEvent::TextDelta(text));
             }
         }
+        OutputContentBlock::Thinking { thinking } => {
+            if !thinking.is_empty() {
+                let rendered = format!("\x1b[2m{thinking}\x1b[0m\n");
+                write!(out, "{rendered}")
+                    .and_then(|()| out.flush())
+                    .map_err(|error| RuntimeError::new(error.to_string()))?;
+            }
+        }
+        OutputContentBlock::Signature { .. } => {}
         OutputContentBlock::ToolUse { id, name, input } => {
             // During streaming, the initial content_block_start has an empty input ({}).
             // The real input arrives via input_json_delta events. In

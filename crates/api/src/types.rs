@@ -47,6 +47,15 @@ pub struct MessageRequest {
     pub tool_choice: Option<ToolChoice>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<ThinkingConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThinkingConfig {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub budget_tokens: u32,
 }
 
 impl MessageRequest {
@@ -187,6 +196,12 @@ pub enum OutputContentBlock {
     Text {
         text: String,
     },
+    Thinking {
+        thinking: String,
+    },
+    Signature {
+        signature: String,
+    },
     ToolUse {
         id: String,
         name: String,
@@ -246,6 +261,8 @@ pub struct ContentBlockDeltaEvent {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlockDelta {
     TextDelta { text: String },
+    ThinkingDelta { thinking: String },
+    SignatureDelta { signature: String },
     InputJsonDelta { partial_json: String },
 }
 

@@ -1938,6 +1938,7 @@ impl ApiClient for AnthropicRuntimeClient {
             tools: (!tools.is_empty()).then_some(tools),
             tool_choice: (!self.allowed_tools.is_empty()).then_some(ToolChoice::Auto),
             stream: true,
+            thinking: None,
         };
 
         self.runtime.block_on(async {
@@ -1975,6 +1976,8 @@ impl ApiClient for AnthropicRuntimeClient {
                                 events.push(AssistantEvent::TextDelta(text));
                             }
                         }
+                        ContentBlockDelta::ThinkingDelta { .. } => {}
+                        ContentBlockDelta::SignatureDelta { .. } => {}
                         ContentBlockDelta::InputJsonDelta { partial_json } => {
                             if let Some((_, _, input)) = &mut pending_tool {
                                 input.push_str(&partial_json);
@@ -2117,6 +2120,8 @@ fn push_output_block(
                 events.push(AssistantEvent::TextDelta(text));
             }
         }
+        OutputContentBlock::Thinking { .. } => {}
+        OutputContentBlock::Signature { .. } => {}
         OutputContentBlock::ToolUse { id, name, input } => {
             let initial_input = if streaming_tool_input
                 && input.is_object()
